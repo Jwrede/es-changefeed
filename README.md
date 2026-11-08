@@ -6,10 +6,12 @@ document (and, optionally, every deleted one) to stdout, a file, an HTTP
 endpoint or another cluster. It needs no plugin, no paid license and no
 timestamp field in the documents.
 
+Output of the CLI test against Elasticsearch 9.5.5 (`-once -deletes`), after
+document 1 was updated and document 2 deleted:
+
 ```
-$ es-changefeed -url http://localhost:9200 -index orders -deletes
-{"op":"upsert","index":"orders","index_uuid":"c1Xo...","shard":1,"id":"1","seq_no":2,"primary_term":1,"version":2,"source":{"title":"edited"}}
-{"op":"delete","index":"orders","index_uuid":"c1Xo...","shard":-1,"id":"2"}
+{"op":"upsert","index":"escf-cli","index_uuid":"BZfHMdwmRv-iskXKFEMGgA","shard":1,"id":"1","seq_no":2,"primary_term":1,"version":2,"source":{"title":"edited"}}
+{"op":"delete","index":"escf-cli","index_uuid":"BZfHMdwmRv-iskXKFEMGgA","shard":1,"id":"2"}
 ```
 
 ## Why
@@ -183,6 +185,13 @@ shard), `escf_events_total{op}`, `escf_sink_errors_total`,
   requests while the feed mirrors into a second index with the `es+` sink;
   afterwards both indices must contain the same documents. Further tests cover
   `_seq_no` range searches, a data stream rollover and the CLI.
+- The first runs against real clusters found two errors the fake did not
+  show. Documents were first tracked by `_id` alone, but with custom routing
+  the same `_id` on two shards is two documents; they are now tracked per
+  shard. And a sink write that failed from the feed's side (the run was
+  stopped while the request was in flight) had still reached the target; when
+  the document was deleted before the retry, no delete was ever sent. Ids are
+  now recorded before the write. Both cases have unit tests.
 - CI runs the end-to-end tests against Elasticsearch 9.5.5, 8.19.23 and
   7.17.28, OpenSearch 3.9.0 and 2.19.7, Elasticsearch 9.5.5 with TLS and a
   password, and a three-node Elasticsearch cluster with one replica per shard

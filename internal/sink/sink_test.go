@@ -43,8 +43,12 @@ func TestHTTPSink(t *testing.T) {
 func TestWriter(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
-	w.Write(context.Background(), []Event{{Op: "delete", Index: "i", IndexUUID: "u", Shard: -1, ID: "x", Routing: "r"}})
-	want := `{"op":"delete","index":"i","index_uuid":"u","shard":-1,"id":"x","routing":"r"}` + "\n"
+	w.Write(context.Background(), []Event{
+		{Op: "upsert", Index: "i", IndexUUID: "u", Shard: 0, ID: "a", SeqNo: 0, PrimaryTerm: 1, Version: 1, Source: json.RawMessage(`{}`)},
+		{Op: "delete", Index: "i", IndexUUID: "u", Shard: 2, ID: "x", Routing: "r"},
+	})
+	want := `{"op":"upsert","index":"i","index_uuid":"u","shard":0,"id":"a","seq_no":0,"primary_term":1,"version":1,"source":{}}` + "\n" +
+		`{"op":"delete","index":"i","index_uuid":"u","shard":2,"id":"x","routing":"r"}` + "\n"
 	if buf.String() != want {
 		t.Fatalf("got %s", buf.String())
 	}

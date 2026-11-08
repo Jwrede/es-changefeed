@@ -33,6 +33,28 @@ type Event struct {
 	Source      json.RawMessage `json:"source,omitempty"`
 }
 
+// MarshalJSON writes seq_no for every upsert, including _seq_no 0, and
+// leaves it out for deletes, which have none.
+func (e Event) MarshalJSON() ([]byte, error) {
+	var seq *int64
+	if e.Op != "delete" {
+		v := e.SeqNo
+		seq = &v
+	}
+	return json.Marshal(struct {
+		Op          string          `json:"op"`
+		Index       string          `json:"index"`
+		IndexUUID   string          `json:"index_uuid"`
+		Shard       int             `json:"shard"`
+		ID          string          `json:"id"`
+		Routing     string          `json:"routing,omitempty"`
+		SeqNo       *int64          `json:"seq_no,omitempty"`
+		PrimaryTerm int64           `json:"primary_term,omitempty"`
+		Version     int64           `json:"version,omitempty"`
+		Source      json.RawMessage `json:"source,omitempty"`
+	}{e.Op, e.Index, e.IndexUUID, e.Shard, e.ID, e.Routing, seq, e.PrimaryTerm, e.Version, e.Source})
+}
+
 // Sink delivers a batch. Write returns only after the batch is durable at the
 // destination; on error the caller retries the same batch.
 type Sink interface {

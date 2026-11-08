@@ -385,6 +385,11 @@ func TestCLIOnce(t *testing.T) {
 	if evs := run(); len(evs) != 2 {
 		t.Fatalf("first run: %v", evs)
 	} else {
+		for _, e := range evs {
+			if _, ok := e["seq_no"]; !ok {
+				t.Fatalf("upsert without seq_no: %v", e)
+			}
+		}
 		b, _ := json.Marshal(evs[0])
 		t.Logf("example event: %s", b)
 	}
