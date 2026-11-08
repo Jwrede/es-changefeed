@@ -21,9 +21,11 @@ import (
 )
 
 type memSink struct {
-	mu     sync.Mutex
-	events []sink.Event
-	failN  int // fail the next N writes
+	mu          sync.Mutex
+	events      []sink.Event
+	failN       int // fail the next N writes
+	ambiguousN  int // accept the next N writes but report an error
+	onAmbiguous func()
 }
 
 func (m *memSink) Write(_ context.Context, b []sink.Event) error {
@@ -32,6 +34,14 @@ func (m *memSink) Write(_ context.Context, b []sink.Event) error {
 	if m.failN > 0 {
 		m.failN--
 		return errors.New("sink down")
+	}
+	if m.ambiguousN > 0 {
+		m.ambiguousN--
+		m.events = append(m.events, b...)
+		if m.onAmbiguous != nil {
+			m.onAmbiguous()
+		}
+		return errors.New("timeout after the sink accepted the batch")
 	}
 	m.events = append(m.events, b...)
 	return nil
@@ -347,6 +357,32 @@ func TestSinkFailureRetriesAndRestartReplays(t *testing.T) {
 	r.open()
 	if got := ids(r.once(), "upsert"); strings.Join(got, ",") != "6" {
 		t.Fatalf("after restart: got %v", got)
+	}
+}
+
+// A write that reached the sink but reported an error, followed by a delete
+// of the same document before the retry: the delete must still be emitted.
+func TestAmbiguousSinkFailureThenDelete(t *testing.T) {
+	r := newRig(t, Config{Deletes: true})
+	r.es.CreateIndex("logs-a", 1)
+	r.es.Put("logs-a", "a", "", `{}`)
+	r.sink.ambiguousN = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.sink.onAmbiguous = cancel // the process is stopped before the retry
+	if err := r.f.Once(ctx); err == nil {
+		t.Fatal("expected an error")
+	}
+	mirror := map[string]string{}
+	apply(mirror, r.sink.take())
+	if _, ok := mirror["a"]; !ok {
+		t.Fatal("setup: the ambiguous write should have reached the sink")
+	}
+	r.es.Delete("logs-a", "a", "")
+	r.open()
+	apply(mirror, r.once())
+	if len(mirror) != 0 {
+		t.Fatalf("mirror kept %v", mirror)
 	}
 }
 

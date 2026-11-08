@@ -319,9 +319,10 @@ func (f *Feed) shard(ctx context.Context, ix cluster.Index, n int, last, upto in
 		if !sort.SliceIsSorted(batch, func(i, j int) bool { return batch[i].SeqNo < batch[j].SeqNo }) {
 			sort.SliceStable(batch, func(i, j int) bool { return batch[i].SeqNo < batch[j].SeqNo })
 		}
-		if err := f.deliver(ctx, batch); err != nil {
-			return err
-		}
+		// Record the ids before delivering: a write that fails from our side
+		// may still have reached the sink, and if the document is deleted
+		// before the retry, only the id set can produce the delete. A recorded
+		// id that never arrived costs at most a delete of a missing document.
 		if f.cfg.Deletes && len(batch) > 0 {
 			ids, err := f.store.IDs(ix.UUID)
 			if err != nil {
@@ -335,6 +336,9 @@ func (f *Feed) shard(ctx context.Context, ix cluster.Index, n int, last, upto in
 			if err := ids.Sync(); err != nil {
 				return err
 			}
+		}
+		if err := f.deliver(ctx, batch); err != nil {
+			return err
 		}
 		f.store.SetShard(ix.UUID, ix.Name, n, next)
 		if err := f.store.Save(); err != nil {
