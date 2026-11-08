@@ -190,23 +190,32 @@ func (s *Store) Close() {
 	}
 }
 
-// IDSet maps delivered document ids to their routing value. Changes are
-// appended to a log file; Compact rewrites the file from memory.
+// DocKey identifies a document within an index. An _id is unique only
+// within a shard: the same _id with custom routing values that map to
+// different shards is two documents.
+type DocKey struct {
+	Shard int
+	ID    string
+}
+
+// IDSet is the set of delivered documents of one index, with their routing.
+// Changes are appended to a log file; Compact rewrites the file from memory.
 type IDSet struct {
 	path string
-	m    map[string]string
+	m    map[DocKey]string
 	f    *os.File
 	w    *bufio.Writer
 }
 
 type logLine struct {
 	Op      string `json:"o"`
+	Shard   int    `json:"s"`
 	ID      string `json:"i"`
 	Routing string `json:"r,omitempty"`
 }
 
 func loadIDSet(path string) (*IDSet, error) {
-	set := &IDSet{path: path, m: map[string]string{}}
+	set := &IDSet{path: path, m: map[DocKey]string{}}
 	f, err := os.Open(path)
 	if err == nil {
 		sc := bufio.NewScanner(f)
@@ -225,9 +234,9 @@ func loadIDSet(path string) (*IDSet, error) {
 			}
 			switch l.Op {
 			case "+":
-				set.m[l.ID] = l.Routing
+				set.m[DocKey{l.Shard, l.ID}] = l.Routing
 			case "-":
-				delete(set.m, l.ID)
+				delete(set.m, DocKey{l.Shard, l.ID})
 			}
 		}
 		f.Close()
@@ -247,34 +256,37 @@ func loadIDSet(path string) (*IDSet, error) {
 // Len is the number of ids.
 func (s *IDSet) Len() int { return len(s.m) }
 
-// Has reports whether id is in the set.
-func (s *IDSet) Has(id string) bool { _, ok := s.m[id]; return ok }
+// Has reports whether a document is in the set.
+func (s *IDSet) Has(shard int, id string) bool { _, ok := s.m[DocKey{shard, id}]; return ok }
 
-// Snapshot returns a copy of the set.
-func (s *IDSet) Snapshot() map[string]string {
-	c := make(map[string]string, len(s.m))
-	for k, v := range s.m {
-		c[k] = v
+// Routing returns the stored routing of a document.
+func (s *IDSet) Routing(shard int, id string) string { return s.m[DocKey{shard, id}] }
+
+// Range calls fn for every document; fn must not modify the set.
+func (s *IDSet) Range(fn func(k DocKey, routing string)) {
+	for k, r := range s.m {
+		fn(k, r)
 	}
-	return c
 }
 
-// Add records delivered ids (buffered until Sync).
-func (s *IDSet) Add(id, routing string) error {
-	if r, ok := s.m[id]; ok && r == routing {
+// Add records a delivered document (buffered until Sync).
+func (s *IDSet) Add(shard int, id, routing string) error {
+	k := DocKey{shard, id}
+	if r, ok := s.m[k]; ok && r == routing {
 		return nil
 	}
-	s.m[id] = routing
-	return s.write(logLine{Op: "+", ID: id, Routing: routing})
+	s.m[k] = routing
+	return s.write(logLine{Op: "+", Shard: shard, ID: id, Routing: routing})
 }
 
 // Remove records a delivered delete (buffered until Sync).
-func (s *IDSet) Remove(id string) error {
-	if _, ok := s.m[id]; !ok {
+func (s *IDSet) Remove(shard int, id string) error {
+	k := DocKey{shard, id}
+	if _, ok := s.m[k]; !ok {
 		return nil
 	}
-	delete(s.m, id)
-	return s.write(logLine{Op: "-", ID: id})
+	delete(s.m, k)
+	return s.write(logLine{Op: "-", Shard: shard, ID: id})
 }
 
 func (s *IDSet) write(l logLine) error {
@@ -301,13 +313,18 @@ func (s *IDSet) Compact() error {
 		return err
 	}
 	w := bufio.NewWriter(f)
-	keys := make([]string, 0, len(s.m))
+	keys := make([]DocKey, 0, len(s.m))
 	for k := range s.m {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Shard != keys[j].Shard {
+			return keys[i].Shard < keys[j].Shard
+		}
+		return keys[i].ID < keys[j].ID
+	})
 	for _, k := range keys {
-		b, _ := json.Marshal(logLine{Op: "+", ID: k, Routing: s.m[k]})
+		b, _ := json.Marshal(logLine{Op: "+", Shard: k.Shard, ID: k.ID, Routing: s.m[k]})
 		w.Write(b)
 		w.WriteByte('\n')
 	}

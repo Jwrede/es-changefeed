@@ -71,7 +71,7 @@ func bulk(t *testing.T, c *cluster.Client, lines []string) {
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// docs returns id -> source (canonical JSON) for every document in index.
+// docs returns "_id/_routing" -> source (canonical JSON) for every document in index.
 func docs(t *testing.T, c *cluster.Client, index string) map[string]string {
 	t.Helper()
 	do(t, c, "POST", "/"+index+"/_refresh", nil)
@@ -80,8 +80,9 @@ func docs(t *testing.T, c *cluster.Client, index string) map[string]string {
 		ScrollID string `json:"_scroll_id"`
 		Hits     struct {
 			Hits []struct {
-				ID     string          `json:"_id"`
-				Source json.RawMessage `json:"_source"`
+				ID      string          `json:"_id"`
+				Routing string          `json:"_routing"`
+				Source  json.RawMessage `json:"_source"`
 			} `json:"hits"`
 		} `json:"hits"`
 	}
@@ -94,7 +95,7 @@ func docs(t *testing.T, c *cluster.Client, index string) map[string]string {
 			var v any
 			json.Unmarshal(h.Source, &v)
 			b, _ := json.Marshal(v)
-			out[h.ID] = string(b)
+			out[h.ID+"/"+h.Routing] = string(b)
 		}
 		b, _ := json.Marshal(map[string]any{"scroll": "1m", "scroll_id": r.ScrollID})
 		r.Hits.Hits = nil
@@ -187,6 +188,9 @@ func TestConcurrentWritersMirror(t *testing.T) {
 		fmt.Sscan(os.Getenv("ESCF_E2E_REPLICAS"), &replicas)
 	}
 	do(t, c, "PUT", "/"+src, map[string]any{"settings": map[string]any{"number_of_shards": 3, "number_of_replicas": replicas, "refresh_interval": "200ms"}})
+	// Same shard count in the mirror, so a routing value maps to the same shard
+	// number on both sides.
+	do(t, c, "PUT", "/"+dst, map[string]any{"settings": map[string]any{"number_of_shards": 3, "number_of_replicas": replicas}})
 	t.Cleanup(func() {
 		c.Do(context.Background(), "DELETE", "/"+src, nil, nil, "", nil)
 		c.Do(context.Background(), "DELETE", "/"+dst, nil, nil, "", nil)
@@ -219,10 +223,19 @@ func TestConcurrentWritersMirror(t *testing.T) {
 			for n := 0; time.Now().Before(deadline); n++ {
 				var lines []string
 				for k := 0; k < 20; k++ {
-					id := fmt.Sprintf("d%d", rng.Intn(400))
+					num := rng.Intn(400)
+					id := fmt.Sprintf("d%d", num)
 					routing := ""
-					if rng.Intn(2) == 0 {
+					switch rng.Intn(3) {
+					case 0:
+						// Routing derived from the id, as in applications
+						// that route by tenant or parent.
 						id = "r" + id
+						routing = fmt.Sprintf(`,"routing":"g%d"`, num%5)
+					case 1:
+						// Random routing: the same _id can then exist on
+						// several shards as separate documents.
+						id = "x" + id
 						routing = fmt.Sprintf(`,"routing":"g%d"`, rng.Intn(5))
 					}
 					if rng.Intn(4) == 0 {
@@ -277,7 +290,7 @@ func TestConcurrentWritersMirror(t *testing.T) {
 	if d := diff(a, b); d != "" {
 		t.Fatalf("mirror differs (%d source docs, %d mirror docs):\n%s", len(a), len(b), d)
 	}
-	if _, ok := b["pre7"]; ok {
+	if _, ok := b["pre7/"]; ok {
 		t.Fatal("deleted pre-existing document still in mirror")
 	}
 	t.Logf("mirror equals source: %d documents", len(a))

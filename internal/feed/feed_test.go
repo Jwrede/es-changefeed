@@ -220,6 +220,35 @@ func TestDeletes(t *testing.T) {
 	}
 }
 
+// The same _id with routing values on different shards is two documents.
+// Deleting one must not report the other as deleted.
+func TestSameIDOnTwoShards(t *testing.T) {
+	r := newRig(t, Config{Deletes: true})
+	r.es.CreateIndex("logs-a", 4)
+	var r1, r2 string
+	for i := 0; i < 50 && r2 == ""; i++ {
+		k := fmt.Sprint("g", i)
+		if r1 == "" {
+			r1 = k
+		} else if r.es.ShardOf("logs-a", "x", k) != r.es.ShardOf("logs-a", "x", r1) {
+			r2 = k
+		}
+	}
+	s1, _ := r.es.Put("logs-a", "x", r1, `{"t":1}`)
+	s2, _ := r.es.Put("logs-a", "x", r2, `{"t":2}`)
+	if evs := r.once(); len(evs) != 2 {
+		t.Fatalf("got %d events", len(evs))
+	}
+	r.es.Delete("logs-a", "x", r1)
+	evs := r.once()
+	if len(evs) != 1 || evs[0].Op != "delete" || evs[0].Shard != s1 || evs[0].Routing != r1 {
+		t.Fatalf("got %+v (shards %d, %d)", evs, s1, s2)
+	}
+	if evs := r.once(); len(evs) != 0 {
+		t.Fatalf("second document reported: %+v", evs)
+	}
+}
+
 // A document that is deleted and then re-created by an operation that is not
 // yet processed when the scan runs: the delete must come before the upsert.
 func TestDeleteThenPendingRecreate(t *testing.T) {

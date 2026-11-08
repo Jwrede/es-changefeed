@@ -83,10 +83,16 @@ the scan has a higher sequence number than anything delivered, so its upsert
 arrives after the delete. The random-workload test in
 `internal/feed/feed_test.go` checks this ordering.
 
-Cost: the id set is held in memory (roughly 100 bytes per document) and each
-scan reads every id of the index. Deletes are therefore detected with a delay
-of up to `-scan-interval`. Delete events carry `"shard": -1` and no sequence
-number.
+Cost: the id set is held in memory (about 110 bytes per document with
+20-character ids, measured with one million ids), a scan additionally holds the
+list of live ids, and each scan reads every id of the index. Deletes are therefore detected with a delay
+of up to `-scan-interval`. Delete events carry the shard and routing of the
+deleted document but no sequence number.
+
+Documents are tracked per shard. Elasticsearch enforces `_id` uniqueness only
+within a shard, so with custom routing the same `_id` can exist on two shards
+as two documents; the feed reports them separately. The `es+` sink reproduces
+that only if the target index has the same number of shards.
 
 ### Indices, rollover, data streams
 

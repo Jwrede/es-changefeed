@@ -42,10 +42,11 @@ func TestIDLogSurvivesTornTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids.Add("a", "")
-	ids.Add("b", "r1")
-	ids.Add("c", "")
-	ids.Remove("a")
+	ids.Add(0, "a", "")
+	ids.Add(1, "b", "r1")
+	ids.Add(0, "c", "")
+	ids.Add(1, "c", "r2") // same _id on another shard is another document
+	ids.Remove(0, "a")
 	if err := ids.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +61,8 @@ func TestIDLogSurvivesTornTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ids2.Len() != 2 || !ids2.Has("b") || !ids2.Has("c") || ids2.Snapshot()["b"] != "r1" {
-		t.Fatalf("got %v", ids2.Snapshot())
+	if ids2.Len() != 3 || !ids2.Has(1, "b") || ids2.Routing(1, "b") != "r1" || !ids2.Has(0, "c") || !ids2.Has(1, "c") || ids2.Has(0, "a") {
+		t.Fatalf("got %d ids", ids2.Len())
 	}
 	// A corrupt line in the middle is an error, not silently skipped.
 	os.WriteFile(p, []byte("{\"o\":\"+\",\"i\":\"x\"}\nnot json\n{\"o\":\"+\",\"i\":\"y\"}\n"), 0o644)

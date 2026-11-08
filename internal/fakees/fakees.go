@@ -357,7 +357,16 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request, name string, bod
 			return
 		}
 		var hits []map[string]any
-		for _, sh := range ix.shards {
+		shards := ix.shards
+		if pref := r.URL.Query().Get("preference"); pref != "" {
+			n, err := strconv.Atoi(strings.TrimPrefix(pref, "_shards:"))
+			if err != nil || n < 0 || n >= len(ix.shards) {
+				writeJSON(w, 400, map[string]any{"error": "fake: bad preference"})
+				return
+			}
+			shards = ix.shards[n : n+1]
+		}
+		for _, sh := range shards {
 			ids := make([]string, 0, len(sh.searchable))
 			for id := range sh.searchable {
 				ids = append(ids, id)

@@ -366,11 +366,12 @@ type DocRef struct {
 	Routing string
 }
 
-// ListIDs returns the id and routing of every document visible in index,
+// ListIDs returns the id and routing of every document visible in one shard,
 // read through one scroll context so the listing is a consistent snapshot.
-func (c *Client) ListIDs(ctx context.Context, index string, pageSize int) ([]DocRef, error) {
+func (c *Client) ListIDs(ctx context.Context, index string, shard, pageSize int) ([]DocRef, error) {
 	q := url.Values{}
 	q.Set("scroll", "2m")
+	q.Set("preference", "_shards:"+strconv.Itoa(shard))
 	body, _ := json.Marshal(map[string]any{
 		// track_total_hits cannot be disabled in a scroll context.
 		"size": pageSize, "_source": false, "sort": []string{"_doc"},

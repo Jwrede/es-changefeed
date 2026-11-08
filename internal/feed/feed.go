@@ -273,17 +273,19 @@ func (f *Feed) initIndex(ctx context.Context, ix cluster.Index, ss map[int]clust
 		if err := f.c.Refresh(ctx, ix.Name); err != nil {
 			return err
 		}
-		refs, err := f.c.ListIDs(ctx, ix.Name, f.cfg.ScanPage)
-		if err != nil {
-			return err
-		}
 		ids, err := f.store.IDs(ix.UUID)
 		if err != nil {
 			return err
 		}
-		for _, r := range refs {
-			if err := ids.Add(r.ID, r.Routing); err != nil {
+		for n := 0; n < ix.Shards; n++ {
+			refs, err := f.c.ListIDs(ctx, ix.Name, n, f.cfg.ScanPage)
+			if err != nil {
 				return err
+			}
+			for _, r := range refs {
+				if err := ids.Add(n, r.ID, r.Routing); err != nil {
+					return err
+				}
 			}
 		}
 		if err := ids.Sync(); err != nil {
@@ -326,7 +328,7 @@ func (f *Feed) shard(ctx context.Context, ix cluster.Index, n int, last, upto in
 				return err
 			}
 			for _, ev := range batch {
-				if err := ids.Add(ev.ID, ev.Routing); err != nil {
+				if err := ids.Add(ev.Shard, ev.ID, ev.Routing); err != nil {
 					return err
 				}
 			}
@@ -362,21 +364,28 @@ func (f *Feed) scan(ctx context.Context, ix cluster.Index) error {
 	if err := f.c.Refresh(ctx, ix.Name); err != nil {
 		return err
 	}
-	refs, err := f.c.ListIDs(ctx, ix.Name, f.cfg.ScanPage)
-	if err != nil {
-		return err
-	}
-	live := make(map[string]struct{}, len(refs))
-	for _, r := range refs {
-		live[r.ID] = struct{}{}
-	}
-	var gone []sink.Event
-	for id, routing := range ids.Snapshot() {
-		if _, ok := live[id]; !ok {
-			gone = append(gone, sink.Event{Op: "delete", Index: ix.Name, IndexUUID: ix.UUID, Shard: -1, ID: id, Routing: routing})
+	live := map[state.DocKey]struct{}{}
+	for n := 0; n < ix.Shards; n++ {
+		refs, err := f.c.ListIDs(ctx, ix.Name, n, f.cfg.ScanPage)
+		if err != nil {
+			return err
+		}
+		for _, r := range refs {
+			live[state.DocKey{Shard: n, ID: r.ID}] = struct{}{}
 		}
 	}
-	sort.Slice(gone, func(i, j int) bool { return gone[i].ID < gone[j].ID })
+	var gone []sink.Event
+	ids.Range(func(k state.DocKey, routing string) {
+		if _, ok := live[k]; !ok {
+			gone = append(gone, sink.Event{Op: "delete", Index: ix.Name, IndexUUID: ix.UUID, Shard: k.Shard, ID: k.ID, Routing: routing})
+		}
+	})
+	sort.Slice(gone, func(i, j int) bool {
+		if gone[i].Shard != gone[j].Shard {
+			return gone[i].Shard < gone[j].Shard
+		}
+		return gone[i].ID < gone[j].ID
+	})
 	for i := 0; i < len(gone); i += f.cfg.Batch {
 		j := i + f.cfg.Batch
 		if j > len(gone) {
@@ -386,7 +395,7 @@ func (f *Feed) scan(ctx context.Context, ix cluster.Index) error {
 			return err
 		}
 		for _, ev := range gone[i:j] {
-			if err := ids.Remove(ev.ID); err != nil {
+			if err := ids.Remove(ev.Shard, ev.ID); err != nil {
 				return err
 			}
 		}
@@ -403,7 +412,7 @@ func (f *Feed) scan(ctx context.Context, ix cluster.Index) error {
 	}
 	f.m.Inc("escf_events_total", map[string]string{"op": "delete"}, float64(len(gone)))
 	f.m.Set("escf_tracked_ids", map[string]string{"index": ix.Name}, float64(ids.Len()))
-	f.log.Info("delete scan", "index", ix.Name, "live", len(refs), "deleted", len(gone), "took", f.now().Sub(start).Round(time.Millisecond).String())
+	f.log.Info("delete scan", "index", ix.Name, "live", len(live), "deleted", len(gone), "took", f.now().Sub(start).Round(time.Millisecond).String())
 	return nil
 }
 
