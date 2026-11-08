@@ -351,6 +351,11 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request, name string, bod
 	}
 	json.Unmarshal(body, &q)
 	if r.URL.Query().Get("scroll") != "" {
+		if strings.Contains(string(body), `"track_total_hits":false`) {
+			// Elasticsearch rejects this combination.
+			writeJSON(w, 400, map[string]any{"error": "disabling [track_total_hits] is not allowed in a scroll context"})
+			return
+		}
 		var hits []map[string]any
 		for _, sh := range ix.shards {
 			ids := make([]string, 0, len(sh.searchable))

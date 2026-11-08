@@ -372,7 +372,8 @@ func (c *Client) ListIDs(ctx context.Context, index string, pageSize int) ([]Doc
 	q := url.Values{}
 	q.Set("scroll", "2m")
 	body, _ := json.Marshal(map[string]any{
-		"size": pageSize, "_source": false, "sort": []string{"_doc"}, "track_total_hits": false,
+		// track_total_hits cannot be disabled in a scroll context.
+		"size": pageSize, "_source": false, "sort": []string{"_doc"},
 		"query": map[string]any{"match_all": map[string]any{}},
 	})
 	type page struct {
