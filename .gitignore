@@ -1,0 +1,4 @@
+/es-changefeed
+/es-changefeed-state/
+*.test
+*.out

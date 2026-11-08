@@ -1,0 +1,23 @@
+# Three-node Elasticsearch cluster for the failover test in CI.
+x-node: &node
+  image: ${ES_IMAGE:-docker.elastic.co/elasticsearch/elasticsearch:9.5.5}
+  environment: &env
+    cluster.name: escf
+    discovery.seed_hosts: es01,es02,es03
+    cluster.initial_master_nodes: es01,es02,es03
+    xpack.security.enabled: "false"
+    ES_JAVA_OPTS: -Xms512m -Xmx512m
+services:
+  es01:
+    <<: *node
+    container_name: es01
+    environment: { <<: *env, node.name: es01 }
+    ports: ["9200:9200"]
+  es02:
+    <<: *node
+    container_name: es02
+    environment: { <<: *env, node.name: es02 }
+  es03:
+    <<: *node
+    container_name: es03
+    environment: { <<: *env, node.name: es03 }

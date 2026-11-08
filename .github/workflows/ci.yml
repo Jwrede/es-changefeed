@@ -1,0 +1,100 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: cross-compile
+        run: |
+          for t in linux/amd64 linux/arm64 darwin/arm64 windows/amd64; do
+            GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./cmd/es-changefeed
+          done
+
+  e2e:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: elasticsearch 9.5.5
+            image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
+            kind: es
+          - name: elasticsearch 8.19.23
+            image: docker.elastic.co/elasticsearch/elasticsearch:8.19.23
+            kind: es
+          - name: elasticsearch 7.17.28
+            image: docker.elastic.co/elasticsearch/elasticsearch:7.17.28
+            kind: es
+          - name: opensearch 3.9.0
+            image: opensearchproject/opensearch:3.9.0
+            kind: os
+          - name: opensearch 2.19.7
+            image: opensearchproject/opensearch:2.19.7
+            kind: os
+          - name: elasticsearch 9.5.5 with TLS and password
+            image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
+            kind: es-secure
+    name: e2e (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: start cluster
+        run: |
+          case "${{ matrix.kind }}" in
+            es) docker run -d --name search -p 9200:9200 -e discovery.type=single-node \
+                  -e xpack.security.enabled=false -e ES_JAVA_OPTS="-Xms1g -Xmx1g" ${{ matrix.image }}
+                echo "ESCF_E2E_URL=http://localhost:9200" >> "$GITHUB_ENV" ;;
+            es-secure) docker run -d --name search -p 9200:9200 -e discovery.type=single-node \
+                  -e ELASTIC_PASSWORD=escf-test-pw -e ES_JAVA_OPTS="-Xms1g -Xmx1g" ${{ matrix.image }}
+                { echo "ESCF_E2E_URL=https://localhost:9200"; echo "ESCF_E2E_USER=elastic"; echo "ESCF_E2E_PASSWORD=escf-test-pw";
+                  echo "ESCF_USER=elastic"; echo "ESCF_PASSWORD=escf-test-pw"; } >> "$GITHUB_ENV" ;;
+            os) docker run -d --name search -p 9200:9200 -e discovery.type=single-node \
+                  -e DISABLE_SECURITY_PLUGIN=true -e DISABLE_INSTALL_DEMO_CONFIG=true \
+                  -e OPENSEARCH_JAVA_OPTS="-Xms1g -Xmx1g" ${{ matrix.image }}
+                echo "ESCF_E2E_URL=http://localhost:9200" >> "$GITHUB_ENV" ;;
+          esac
+      - name: wait for cluster
+        run: |
+          auth=""; [ -n "$ESCF_E2E_USER" ] && auth="-u $ESCF_E2E_USER:$ESCF_E2E_PASSWORD"
+          timeout 240 bash -c "until curl -skf $auth '$ESCF_E2E_URL/_cluster/health?wait_for_status=yellow&timeout=5s'; do sleep 3; done" || { docker logs search | tail -50; exit 1; }
+      - run: go test -v -count=1 ./e2e/
+        timeout-minutes: 10
+      - if: failure()
+        run: docker logs search | tail -100
+
+  e2e-failover:
+    runs-on: ubuntu-24.04
+    name: e2e (3-node elasticsearch, replicas, node killed)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - run: docker compose -f e2e/cluster-compose.yml up -d
+      - name: wait for cluster
+        run: |
+          timeout 300 bash -c "until curl -sf 'http://localhost:9200/_cluster/health?wait_for_status=green&wait_for_nodes=3&timeout=5s'; do sleep 3; done" || { docker compose -f e2e/cluster-compose.yml logs | tail -80; exit 1; }
+      - run: go test -v -count=1 -run 'TestConcurrentWritersMirror|TestSeqRange' ./e2e/
+        timeout-minutes: 10
+        env:
+          ESCF_E2E_URL: http://localhost:9200
+          ESCF_E2E_REPLICAS: "1"
+          ESCF_E2E_KILL_NODE: es03
+      - if: failure()
+        run: docker compose -f e2e/cluster-compose.yml logs | tail -150
